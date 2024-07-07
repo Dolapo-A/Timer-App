@@ -1,27 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:screenshot/screenshot.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart';
-import 'package:flutter/services.dart';
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Timer App',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-      ),
-      home: TimerScreen(),
-    );
-  }
-}
 
 class TimerScreen extends StatefulWidget {
   @override
@@ -29,21 +12,14 @@ class TimerScreen extends StatefulWidget {
 }
 
 class _TimerScreenState extends State<TimerScreen> {
-  Timer? _timer;
-  int _seconds = 0;
-  late ScreenshotController screenshotController;
-  bool isCameraInitialized = false;
-  File? screenshotFile;
-  XFile? headshotFile;
-
   String _cameraInfo = 'Unknown';
   List<CameraDescription> _cameras = <CameraDescription>[];
   int _cameraIndex = 0;
   int _cameraId = -1;
   bool _initialized = false;
   Size? _previewSize;
-  MediaSettings _mediaSettings = const MediaSettings(
-    resolutionPreset: ResolutionPreset.low,
+  final MediaSettings _mediaSettings = const MediaSettings(
+    resolutionPreset: ResolutionPreset.medium,
     fps: 15,
     videoBitrate: 200000,
     audioBitrate: 32000,
@@ -52,11 +28,19 @@ class _TimerScreenState extends State<TimerScreen> {
   StreamSubscription<CameraErrorEvent>? _errorStreamSubscription;
   StreamSubscription<CameraClosingEvent>? _cameraClosingStreamSubscription;
 
+  Timer? _timer;
+  int _seconds = 0;
+  ScreenshotController screenshotController = ScreenshotController();
+  bool isCameraInitialized = false;
+  File? screenshotFile;
+  XFile? headshotFile;
+  bool _isTimerRunning = false;
+
   @override
   void initState() {
     super.initState();
-    screenshotController = ScreenshotController();
-    _fetchCameras();
+    WidgetsFlutterBinding.ensureInitialized();
+    _fetchCamera();
   }
 
   @override
@@ -69,7 +53,7 @@ class _TimerScreenState extends State<TimerScreen> {
     super.dispose();
   }
 
-  Future<void> _fetchCameras() async {
+  Future<void> _fetchCamera() async {
     String cameraInfo;
     List<CameraDescription> cameras = <CameraDescription>[];
 
@@ -217,62 +201,60 @@ class _TimerScreenState extends State<TimerScreen> {
   }
 
   void _startTimer() {
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) {
+    if (!_isTimerRunning) {
+      setState(() {
+        _isTimerRunning = true;
+      });
+    }
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       setState(() {
         _seconds++;
       });
     });
   }
 
-  void _startCapture() {
-    _startTimer();
-    _captureScreenshot();
-    _captureHeadshot();
+  void _pauseTimer() {
+    if (_timer != null) {
+      _timer!.cancel();
+      setState(() {
+        _isTimerRunning = false;
+      });
+    }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Timer App'),
-      ),
-      body: Screenshot(
-        controller: screenshotController,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text('Time: $_seconds seconds'),
-            SizedBox(height: 20),
-            screenshotFile != null
-                ? Image.file(screenshotFile!)
-                : Container(),
-            SizedBox(height: 20),
-            headshotFile != null
-                ? Image.file(File(headshotFile!.path))
-                : Container(),
-            SizedBox(height: 20),
-            if (_initialized && _cameraId >= 0 && _previewSize != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                child: Align(
-                  child: Container(
-                    constraints: const BoxConstraints(maxHeight: 500),
-                    child: AspectRatio(
-                      aspectRatio: _previewSize!.width / _previewSize!.height,
-                      child: _buildPreview(),
-                    ),
-                  ),
-                ),
-              ),
-            SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _startCapture,
-              child: Text('Start Timer and Capture'),
-            ),
-          ],
-        ),
-      ),
-    );
+  void _resetTimer() {
+    _pauseTimer();
+    setState(() {
+      _seconds = 0;
+    });
+  }
+
+  String formatDuration(int totalSeconds) {
+    final duration = Duration(seconds: totalSeconds);
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes % 60;
+    final seconds = duration.inSeconds % 60;
+
+    return [hours, minutes, seconds]
+        .map((seg) => seg.toString().padLeft(2, '0'))
+        .join(':');
+  }
+
+  void _startCapture() {
+    // _initializeCamera();
+    if (!_isTimerRunning) {
+      _startTimer();
+      _captureHeadshot();
+      _captureScreenshot();
+    }
+  }
+
+  void _startCamera() {
+    if (_initialized) {
+      _disposeCurrentCamera();
+    } else {
+      _initializeCamera();
+    }
   }
 
   void _onCameraError(CameraErrorEvent event) {
@@ -283,15 +265,121 @@ class _TimerScreenState extends State<TimerScreen> {
 
       // Dispose camera on camera error as it cannot be used anymore.
       _disposeCurrentCamera();
-      _fetchCameras();
+      _fetchCamera();
     }
   }
 
   void _onCameraClosing(CameraClosingEvent event) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Camera is closing')),
+        SnackBar(content: Text('Closing camera: ${event.cameraId}')),
       );
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Timer App'),
+      ),
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Align(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Screenshot(
+                    controller: screenshotController,
+                    child: Column(
+                      children: [
+                        Text(
+                          formatDuration(_seconds),
+                          style: const TextStyle(
+                              fontSize: 26, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 20),
+                        if (_initialized &&
+                            _cameraId >= 0 &&
+                            _previewSize != null)
+                          Container(
+                            constraints: const BoxConstraints(maxHeight: 200),
+                            child: AspectRatio(
+                              aspectRatio:
+                                  _previewSize!.width / _previewSize!.height,
+                              child: _buildPreview(),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton(
+                    onPressed: () {
+                      _startCamera();
+                    },
+                    child: _initialized
+                        ? const Text('Close Camera')
+                        : const Text('Open Camera'),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: !_isTimerRunning ? _startCapture : null,
+                    child: const Text('Start Timer and Capture'),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        height: 40,
+                        width: 40,
+                        child: FloatingActionButton(
+                          shape: const CircleBorder(),
+                          splashColor: Colors.white54,
+                          onPressed:
+                              _isTimerRunning ? _pauseTimer : _startTimer,
+                          child: _isTimerRunning
+                              ? const Icon(Icons.pause)
+                              : const Icon(Icons.play_arrow),
+                        ),
+                      ),
+                      const SizedBox(
+                        width: 10,
+                      ),
+                      SizedBox(
+                        height: 40,
+                        width: 40,
+                        child: FloatingActionButton(
+                            shape: const CircleBorder(),
+                            splashColor: Colors.white54,
+                            onPressed: _resetTimer,
+                            child: const Icon(Icons.replay)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (screenshotFile != null)
+            Positioned(
+              bottom: 20,
+              right: 20,
+              child: Container(
+                color: Colors.white,
+                child: Image.file(
+                  screenshotFile!,
+                  width: 250,
+                  height: 250,
+                  fit: BoxFit.cover,
+                ),
+              ),
+            )
+        ],
+      ),
+    );
   }
 }
